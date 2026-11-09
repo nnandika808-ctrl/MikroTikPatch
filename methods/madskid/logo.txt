@@ -1,0 +1,8 @@
+  L)                    d)                         
+  L)                    d)                         
+  L)       u)   UU  d)DDDD e)EEEEE n)NNNN   s)SSSS 
+  L)       u)   UU d)   DD e)EEEE  n)   NN s)SSSS  
+  L)       u)   UU d)   DD e)      n)   NN      s) 
+  L)llllll  u)UUU   d)DDDD  e)EEEE n)   NN s)SSSS  
+                                                                                                                                                
+  Ludens   https://github.com/madskid/MikrotikPatch
