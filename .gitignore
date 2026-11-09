@@ -1,0 +1,16 @@
+keys/
+bot/token
+bot/allow
+bot/licenses.log
+out/
+work/
+src/
+build/
+ref/
+__pycache__/
+*.pyc
+*.log
+*.img
+*.qcow2
+*.iso
+*.zip

@@ -1,0 +1,75 @@
+name: Patch RouterOS
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Versi RouterOS (mis. 7.25.1). Kosong = 7.25.1"
+        required: false
+        default: "7.25.1"
+  push:
+    tags: ["v*"]
+
+jobs:
+  build-x86:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      MTP: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependensi
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xorriso squashfs-tools qemu-utils mtools dosfstools syslinux \
+            zip unzip rsync curl ca-certificates python3-pefile
+
+      - name: Siapkan kunci
+        env:
+          KEYS_ENV: ${{ secrets.KEYS_ENV }}
+        run: |
+          mkdir -p keys
+          printf '%s\n' "$KEYS_ENV" > keys/env.user
+          chmod 600 keys/env.user
+
+      - name: Unduh sumber RouterOS
+        env:
+          V: ${{ github.event.inputs.version || '7.25.1' }}
+        run: |
+          V="${V:-7.25.1}"
+          mkdir -p work/src/$V
+          cd work/src/$V
+          for f in "mikrotik-$V.iso" "install-image-$V.zip" "chr-$V.img.zip" "all_packages-x86-$V.zip"; do
+            [ -s "$f" ] || curl -sL -o "$f" "https://download.mikrotik.com/routeros/$V/$f"
+          done
+          ls -l
+
+      - name: Build
+        env:
+          V: ${{ github.event.inputs.version || '7.25.1' }}
+        run: |
+          V="${V:-7.25.1}"
+          # CI tidak punya /srv -> arahkan ARTIFACT_DIR ke workspace
+          sudo mkdir -p /srv/artifacts && sudo chown -R $(id -u):$(id -g) /srv/artifacts
+          KEYFILE=keys/env.user bash build.sh "$V" x86 --only=iso,img,chr --no-boot --force \
+            || KEYFILE=keys/env.user KEEP_STOCK_LOADER=1 bash build.sh "$V" x86 --only=iso,img,chr --no-boot --force
+
+      - name: Kumpulkan artefak
+        env:
+          V: ${{ github.event.inputs.version || '7.25.1' }}
+        run: |
+          V="${V:-7.25.1}"
+          mkdir -p dist
+          cp /srv/artifacts/$V/x86/*.iso dist/ 2>/dev/null || true
+          cp /srv/artifacts/$V/x86/*.zip dist/ 2>/dev/null || true
+          cp /srv/artifacts/$V/x86/*.sha256 dist/ 2>/dev/null || true
+          # build.sh menulis artefak di $MTP/out atau /srv; cek keduanya
+          if [ ! -s dist/* ]; then cp out/* dist/ 2>/dev/null || true; fi
+          ls -l dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: routeros-${{ github.event.inputs.version || '7.25.1' }}-x86
+          path: dist/*
