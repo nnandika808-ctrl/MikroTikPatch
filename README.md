@@ -14,8 +14,35 @@ Patch RouterOS x86/CHR — produksi sendiri dengan keypair sendiri.
 | Versi | Metode | Loader | Catatan |
 |---|---|---|---|
 | 6.49.23 | `v6` (loskiq + fix) | stok | keyman WAJIB dipatch (bug loskiq: blok `mode in files` tidak pernah aktif di v6) |
-| 7.23.2–7.24.5 | `madskid` | **stok** (default) | loader ter-patch = hang; kunci permanen justeru butuh loader stok |
-| 7.25 / 7.25.1 | `elseif` | ter-guard + wrapper mode | butuh `option.npk` (bash+keygen) |
+| 7.23.2–7.24.5 | `madskid` | **stok** (default) | loader ter-patch = hang; kunci permanen justru butuh loader stok |
+| **7.25 / 7.25.1 / 7.25.2** | `elseif` | **guard-table rekey + 1 jmp** (lihat seksi bawah) | WAJIB `option.npk` (bash+keygen); installer x86 pilih `a` (all) |
+
+Status terbukti (23 Nov 2026): **7.25.2 lulus** — `nlevel: 6`,
+`features: extra-channels`, **tanpa `expires-in`**, tahan reboot; upgrade online
+7.23.7 → 7.25.2 dari server sendiri berjalan.
+
+## RESEP FINAL loader v7.25.x (terbukti 7.25.1 & 7.25.2)
+
+Untuk 7.25 ke atas (method `elseif`). Hanya **33 byte** yang boleh berubah dari
+loader asli elseif versi itu. Patch `.text` immediate = reboot-loop
+`Starting services…`.
+
+1. **Ambil loader asli versi itu** dari release elseif:
+   ```
+   curl -sSL -o r.npk https://github.com/elseif/MikroTikPatch/releases/download/<V>/routeros-<V>.npk
+   7z x r.npk nova/bin/loader nova/bin/mode2
+   ```
+2. **Isi guard table @0x153E4** = 8 record `{offset:u32 LE, len:u8 (4), chunk:4B}`
+   menunjuk posisi kunci di `mode2` versi itu. Offset per versi: **7.25.1 @0x6064,
+   7.25.2 @0x8cb7**.
+3. **Byte @0x15048: 0x74 → 0xEB** (`je` → `jmp`, melompati pengecekan lisensi).
+   **Tanpa ini kunci diterima tapi hilang setelah reboot**.
+4. **`.text` biarkan stok** — jangan sentuh 8 immediate `movl` di `0x83ac…0x8405`.
+5. `patch_sys.py` pilih `assets/loader-$VER.ref` (fallback `loader-7.25.1.ref`).
+6. **`option.npk` WAJIB** (hook 7.25+ cek `/pckg/option/bin/bash` sebelum `memcmp`;
+   tanpa option kunci hilang setelah reboot). Installer x86 pilih `a` (all).
+
+`assets/loader-7.25.2.ref` (sha256 `b7a77861…`) = 32 byte guard + 1 byte `@0x15048`.
 
 ## Struktur
 
@@ -96,6 +123,8 @@ Hasil keluar sebagai artifact unduhan.
 ## Pelajaran penting (yang sudah dibuktikan, bukan teori)
 
 1. Loader ≤7.24.5 **tidak boleh** di-patch via `patch_bin.py` → box hang saat boot. Biarkan stok (`KEEP_STOCK_LOADER=1`, default).
-2. Loader madskid (`ff303b70…`) menerima kunci tapi **lisensi hilang tiap reboot** — jangan dipakai untuk madskid path.
+2. Loader madskid (`ff303b70…`) **diperlukan** supaya lisensi tidak hilang tiap reboot — jangan dibiarkan stok.
 3. `nlevel` vs `level` hanya beda tampilan x86 vs CHR — bukan indikator masalah.
 4. 6.49.23: pastikan keyman ter-patch (audit `our_key_files` harus ≥ 4; jika 3 = bug loskiq kambuh).
+5. 7.25.x: guard-table rekey + byte `@0x15048` → `EB`, `.text` stok, dan `option.npk` wajib (lihat resep penuh di atas). Tanpa byte `@0x15048`, kunci diterima tapi hilang setelah reboot.
+6. 7.25.2 terverifikasi: `nlevel: 6`, tanpa `expires-in`; upgrade online 7.23.7 → 7.25.2 jalan.
