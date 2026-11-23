@@ -31,9 +31,9 @@ die() { printf '\nFATAL: %s\n' "$*"; exit 1; }
 
 [ "$ARCH" = x86 ] || die "arsitektur $ARCH belum disiapkan (x86 dulu)"
 case "$V" in
-  6.49.23) METHOD=v6 ;;
-  7.23.7|7.24.5) METHOD=madskid ;;
-  7.25|7.25.1) METHOD=elseif ;;
+  6.49.17|6.49.23) METHOD=v6 ;;
+  7.9|7.9.1|7.9.2|7.23.2|7.23.7|7.24.2|7.24.5) METHOD=madskid ;;
+  7.25|7.25.1|7.25.2) METHOD=elseif ;;
   *) die "versi $V tidak ada di daftar metode" ;;
 esac
 [ "$METHOD" = v6 ] && [ "${V%%.*}" != 6 ] && die "v6 harus pakai loskiq"
@@ -67,7 +67,9 @@ NPKPY="env PYTHONPATH=$MTP/elseif $PY"
 MP="$MTP/methods/$METHOD"
 export MP
 [ "$METHOD" = v6 ] && MP="$MTP/methods/v6"
-STOCK_LOGO=$MTP/work/banner-ref/logo-$V.txt
+# banner stok: assets/banner-ref (ikut repo) atau work/banner-ref (cache)
+STOCK_LOGO=$MTP/assets/banner-ref/logo-$V.txt
+[ -f "$STOCK_LOGO" ] || STOCK_LOGO=$MTP/work/banner-ref/logo-$V.txt
 
 # ---------------------------------------------------------------- 1. sumber
 say "sumber"
@@ -126,11 +128,17 @@ fi
 # ---------------------------------------------------------------- 3b. option.npk (wajib >=7.25)
 # Hook loader memeriksa /pckg/option/bin/bash sebelum patch memcmp. Tanpa paket ini
 # verifikasi lisensi tidak pernah dilonggarkan -> login tidak muncul.
-if true; then
+# TERBUKTI 13 Nov 2026: untuk madskid/v6 (<=7.24.5) option.npk HARUS TIDAK ada —
+# rilis madskid 7.24.2 tidak memuatnya, dan kehadirannya membuat lisensi x86
+# ditolak saat boot (nlevel hilang, balik expires-in). Pakai NO_OPTION_NPK=1.
+if [ "${NO_OPTION_NPK:-0}" = 1 ]; then
+  echo "option.npk dilewati (NO_OPTION_NPK=1, resep madskid)"
+else
   say "bangun option.npk"
   O=$W/option-root; rm -rf "$O"; mkdir -p "$O/bin"
-  install -m 755 "$MTP/elseif/busybox/busybox_x86" "$O/bin/busybox"
-  install -m 755 "$MTP/elseif/keygen/keygen_x86" "$O/bin/keygen"
+  ELS=$MTP/methods/elseif
+  install -m 755 "$ELS/busybox/busybox_x86" "$O/bin/busybox"
+  install -m 755 "$ELS/keygen/keygen_x86" "$O/bin/keygen"
   for c in $("$O/bin/busybox" --list); do ln -sf /pckg/option/bin/busybox "$O/bin/$c"; done
   mksquashfs "$O" "$W/option.sfs" -no-recovery -noappend -exit-on-error -quiet \
     -comp xz -no-xattrs -b 256k -all-root >/dev/null
@@ -164,18 +172,59 @@ if [ "$METHOD" = elseif ]; then
   [ -f "$B/mode" ] || die "mode tidak ada di paket sistem"
   mv "$B/mode" "$B/mode2"
   cp "$MTP/assets/mode-els-static-7.25.1" "$B/mode"
-  cp "$MTP/assets/loader-7.25.1.ref" "$B/loader"
+  # Loader terikat versi: pakai aset loader-<versi>.ref kalau ada; kalau tidak,
+  # biarkan loader stok dari paket versi ini (tabel guard-nya cocok dengan mode2).
+  if [ -f "$MTP/assets/loader-$V.ref" ]; then
+    cp "$MTP/assets/loader-$V.ref" "$B/loader"
+    echo "loader aset $V dipasang"
+  else
+    echo "loader $V dibiarkan stok (aset ref khusus versi belum ada)"
+  fi
   # Guard-patch loader memicu reboot-loop di build ini -> loader aset dipakai apa adanya.
   if [ "${PATCH_GUARD:-0}" = 1 ]; then
     $PY "$MTP/patch_loader_guard.py" "$B/loader" "$B/loader.new" "$CUSTOM_LICENSE_PUBLIC_KEY" | tail -1
     mv "$B/loader.new" "$B/loader"
   fi
 else
-  # madskid/v6: patch.py tidak menyentuh loader. Loader STOK dipakai untuk <=7.24.5:
-  # ia menyimpan lisensi ke config sehingga permanen bertahan antar reboot.
-  # (Loader madskid ff303b70 sempat dicoba: kunci aktif tapi hilang tiap reboot.)
-  if [ "${KEEP_STOCK_LOADER:-1}" = 1 ]; then
-    echo "loader dibiarkan stok (default)"
+  # madskid/v6: patch.py tidak menyentuh loader. Loader madskid ff303b70 dipakai:
+# TERBUKTI di perangkat nyata 7.24.2 (2026-11-13): nlevel=6 permanen, tanpa
+# expires-in, tanpa "ros mode access failed". Catatan lama yang menyebut loader
+# ini bikin hang TIDAK terbukti ulang — mode/keyman kita memang sudah identik
+# dengan rilis madskid, hanya loader yang berbeda.
+  # Loader terikat VERSI: menyalin loader 7.24.5 ke build lain membuat box mati
+  # setelah install (terbukti 7.9.2). Pakai aset loader khusus versi kalau ada,
+  # kalau tidak pakai loader stok yang tidak dipatch.
+  LOADER_ASSET="$MTP/assets/loader-madskid-$V"
+  # v6: loader STOK memverifikasi lisensi dengan kunci stok, jadi kunci kita
+  # dibuang tiap boot ("diterima tapi level 0"). Pakai loader versi itu yang
+  # HANYA kunci publiknya diganti (biner & versi tetap sama, tidak ada risiko
+  # ketidakcocokan versi seperti menyalin loader madskid antarversi).
+  LOADER_INPLACE="$MTP/assets/loader-$V-patched"
+  if [ -f "$LOADER_INPLACE" ]; then
+    cp "$LOADER_INPLACE" "$B/loader"
+    echo "loader $V dipasang (kunci lisensi sudah dipatch ke keypair kita)"
+  elif [ -f "$LOADER_ASSET" ]; then
+    cp "$LOADER_ASSET" "$B/loader"
+    echo "loader khusus $V dipasang"
+  elif [ "${MADSKID_LOADER_ANY:-0}" = 1 ] && [ -f "$MTP/assets/loader-madskid-7.24.5" ]; then
+    cp "$MTP/assets/loader-madskid-7.24.5" "$B/loader"
+    echo "loader madskid ff303b70 dipasang (dipaksa MADSKID_LOADER_ANY=1)"
+  elif [ "${KEEP_STOCK_LOADER:-1}" = 1 ]; then
+    # JANGAN diam-diam pakai loader stok: stok = lisensi balik expires-in setelah
+    # reboot (terbukti di perangkat 13 Nov 2026). Hanya boleh kalau diminta eksplisit
+    # lewat KEEP_STOCK_LOADER=0 (dipakai v6, yang tidak memakai loader madskid).
+    if [ "$V" = "7.25" ] || [ "$V" = "7.25.1" ] || [ "${V%%.*}" -le 7 ] 2>/dev/null; then
+      case "$V" in
+        7.25|7.25.1|7.25.2) : ;;  # versi ini memakai jalur elseif/mode, bukan madskid
+        6.*) : ;;          # v6 (loskiq): loader stok = resep resmi; keyman yang
+                           # memverifikasi lisensi sudah dipatch key kita, dan
+                           # loader stok terbukti boot normal (ISO user, 21 Nov).
+        *)
+          die "loader madskid untuk $V tidak ada di assets/ dan loader stok akan membuat lisensi expires-in. Tambahkan assets/loader-madskid-$V atau jalankan dengan MADSKID_LOADER_ANY=1 (risiko: loader terikat versi)."
+          ;;
+      esac
+    fi
+    echo "loader dibiarkan stok (aset madskid tidak ada)"
   else
     $PY "$MTP/patch_bin.py" "$B/loader" "$MP" || die "loader tidak bisa dipatch"
   fi
@@ -185,6 +234,25 @@ chmod 755 "$B/mode" "$B/loader" "$B/keyman" 2>/dev/null || true
 
 # banner stok
 cp "$STOCK_LOGO" "$d/sq/nova/lib/console/logo.txt"; chmod 644 "$d/sq/nova/lib/console/logo.txt"
+
+# auto-install kunci: /nova/store/autorun.scr dibaca `mode` saat boot, sehingga
+# keyman --find-key jalan tanpa perlu /system/shell. Terbukti: kunci di /var/pckg
+# jadi permanen dan bertahan reboot.
+# Auto-lisensi: loader madskid menjalankan /rw/disk/rc.local saat boot
+# ("Starting rc.local..."), jadi tanam skrip itu di image. Terbukti jalur ini
+# bekerja dengan loader madskid (ff303b70) tanpa membuat boot hang.
+if [ "${AUTO_KEYMAN:-0}" = 1 ]; then
+  if [ -f "$MTP/assets/loader-madskid-7.24.5" ]; then
+    cp "$MTP/assets/loader-madskid-7.24.5" "$B/loader"
+    echo "loader madskid dipasang (auto rc.local)"
+  fi
+  # /rw -> /flash/rw (symlink absolut): tulis ke target nyata di image
+  RWDISK="$d/sq/flash/rw/disk"
+  mkdir -p "$RWDISK"
+  printf '#!/bin/sh\n/nova/bin/keyman --find-key\n' > "$RWDISK/rc.local"
+  chmod 755 "$RWDISK/rc.local"
+  echo "rc.local: keyman otomatis saat boot ($RWDISK)"
+fi
 
 # diagnostik: kembalikan mode ke versi stok (uji apakah key swap di mode yang mematikan login)
 if [ "${KEEP_STOCK_MODE:-0}" = 1 ] && [ -f "$MTP/work/spk2/$V/sq/nova/bin/mode" ]; then
@@ -251,6 +319,9 @@ echo "audit PASS, banner ok"
 # ---------------------------------------------------------------- 6. ISO
 mkdir -p "$W/new_iso" && cp -a "$W/iso/." "$W/new_iso/"
 rm -f "$W/new_iso"/*.npk && cp "$W/out"/*.npk "$W/new_iso/"
+# option.npk hanya untuk elseif (>=7.25). Pada madskid/v6 kehadirannya di ISO
+# membuat verifikasi lisensi x86 gagal saat boot (nlevel hilang).
+[ "$METHOD" = elseif ] || rm -f "$W/new_iso"/option-*.npk
 
 if want iso; then
   say "rakit ISO"
@@ -264,11 +335,21 @@ if want iso; then
       mv -f "$W/new_iso/isolinux/initrd.p" "$W/new_iso/isolinux/initrd.rgz"
     fi
   else
+    # LXC/gVisor: /dev/loop tidak ada, mount -o loop gagal. Fallback ke mtools.
     mkdir -p "$W/efiboot"
-    mount -o loop "$W/new_iso/efiboot.img" "$W/efiboot"
-    ( cd "$W" && env PYTHONPATH="$MP" $PY "$MP/patch.py" kernel "$W/efiboot/linux.x86_64" -O "$W/new_iso/isolinux/linux" ) \
-      || { umount "$W/efiboot"; die "patch kernel EFI gagal"; }
-    umount "$W/efiboot"
+    if mount -o loop "$W/new_iso/efiboot.img" "$W/efiboot" 2>/dev/null; then
+      ( cd "$W" && env PYTHONPATH="$MP" $PY "$MP/patch.py" kernel "$W/efiboot/linux.x86_64" -O "$W/new_iso/isolinux/linux" ) \
+        || { umount "$W/efiboot"; die "patch kernel EFI gagal"; }
+      umount "$W/efiboot"
+    else
+      say "mount loop tidak tersedia — pakai mtools"
+      command -v mcopy >/dev/null || die "butuh mtools (apt install mtools dosfstools)"
+      rm -f "$W/efiboot/linux.x86_64"
+      MTOOLS_SKIP_CHECK=1 mcopy -n -i "$W/new_iso/efiboot.img" ::/linux.x86_64 "$W/efiboot/linux.x86_64" \
+        || die "mcopy linux.x86_64 gagal"
+      ( cd "$W" && env PYTHONPATH="$MP" $PY "$MP/patch.py" kernel "$W/efiboot/linux.x86_64" -O "$W/new_iso/isolinux/linux" ) \
+        || die "patch kernel EFI gagal"
+    fi
   fi
   ISO="$ART/mikrotik-$V-patched.iso"
   if [ "$METHOD" = v6 ]; then
@@ -300,7 +381,7 @@ if want iso; then
   if $PY "$MTP/audit_keys.py" "$a/sq" > "$a/audit.txt"; then
     tail -1 "$a/audit.txt"
   elif [ "$USE_MADSKID_LOADER" = 1 ] && [ "$(grep -c '^STOCK' "$a/audit.txt")" = 1 ] && grep -q '^STOCK.*nova/bin/loader' "$a/audit.txt"; then
-    echo "audit ISO: sisa stok hanya di loader madskid (diizinkan)"
+    echo "audit ISO: sisa stok hanya di loader (diizinkan)"
   elif [ "${KEEP_STOCK_LOADER:-0}" = 1 ] && [ "$(grep -c '^STOCK' "$a/audit.txt")" = 1 ] && grep -q '^STOCK.*nova/bin/loader' "$a/audit.txt"; then
     echo "audit ISO: sisa stok hanya di loader (diizinkan)"
   else
@@ -316,7 +397,38 @@ if want img; then
   IMG="$ART/install-image-$V-patched.img"
   truncate --size 128M "$IMG"
   mkfs.vfat -I -F 32 -n Install "$IMG" >/dev/null
-  LOOP=$(losetup -f --show "$IMG"); trap 'umount -q "$W/inst" 2>/dev/null; losetup -d "$LOOP" 2>/dev/null' EXIT
+  # LXC: /dev/loop tidak ada -> rakit pakai mtools (tanpa mount, tanpa syslinux --install)
+  if ! LOOP=$(losetup -f --show "$IMG" 2>/dev/null) && [ -z "${LOOP:-}" ]; then
+    say "loop tidak tersedia — install image via mtools"
+    command -v mcopy >/dev/null || die "butuh mtools (apt install mtools dosfstools)"
+    export MTOOLS_SKIP_CHECK=1
+    mcopy -i "$IMG" "$W/new_iso/isolinux/linux" ::/linux || die "mcopy linux gagal"
+    if [ -f /usr/lib/syslinux/modules/bios/ldlinux.c32 ]; then
+      mcopy -i "$IMG" /usr/lib/syslinux/modules/bios/ldlinux.c32 ::/ldlinux.c32 2>/dev/null || true
+    fi
+    if [ "$METHOD" != v6 ]; then
+      rm -f "$W/efiboot/BOOTX64.EFI"
+      mcopy -n -i "$W/new_iso/efiboot.img" ::/EFI/BOOT/BOOTX64.EFI "$W/efiboot/BOOTX64.EFI" 2>/dev/null || true
+      if [ -f "$W/efiboot/BOOTX64.EFI" ]; then
+        mmd -i "$IMG" ::/EFI ::/EFI/BOOT 2>/dev/null || true
+        mcopy -i "$IMG" "$W/efiboot/BOOTX64.EFI" ::/EFI/BOOT/BOOTX64.EFI || true
+      fi
+    fi
+    if [ "$METHOD" = v6 ] && [ -f "$W/new_iso/isolinux/initrd.rgz" ]; then
+      mcopy -i "$IMG" "$W/new_iso/isolinux/initrd.rgz" ::/initrd.rgz
+      printf 'default system\n\nLABEL system\n\tKERNEL linux\n\tAPPEND load_ramdisk=1 initrd=initrd.rgz -hdd-install\n' > "$W/syslinux.cfg"
+    else
+      printf 'default system\nlabel system\n\tkernel linux\n\tappend load_ramdisk=1 -install -hdd\n' > "$W/syslinux.cfg"
+    fi
+    mcopy -i "$IMG" "$W/syslinux.cfg" ::/syslinux.cfg
+    i=1; for npk in "$W/new_iso"/*.npk; do mcopy -i "$IMG" "$npk" "::$i.npk"; i=$((i+1)); done
+    printf '' > "$W/CHOOSE"; mcopy -i "$IMG" "$W/CHOOSE" ::/CHOOSE 2>/dev/null || true
+    printf '' > "$W/autorun.scr"; mcopy -i "$IMG" "$W/autorun.scr" ::/autorun.scr 2>/dev/null || true
+    MTOOLS_SKIP_CHECK=1 mdir -i "$IMG" ::/ 2>/dev/null | tail -3
+    sha256sum "$IMG" > "$IMG.sha256"
+    ( cd "$ART" && zip -q "install-image-$V-patched.zip" "install-image-$V-patched.img" )
+  else
+  trap 'umount -q "$W/inst" 2>/dev/null; losetup -d "$LOOP" 2>/dev/null' EXIT
   syslinux --install "$LOOP"
   mkdir -p "$W/inst"; mount -o loop,uid=0,gid=0,umask=000 "$LOOP" "$W/inst"
   cp "$W/new_iso/isolinux/linux" "$W/inst/linux"
@@ -327,19 +439,35 @@ if want img; then
     cp "$W/efiboot/EFI/BOOT/BOOTX64.EFI" "$W/inst/EFI/BOOT/BOOTX64.EFI"
     umount "$W/efiboot"
   fi
-  printf 'default system\nlabel system\n\tkernel linux\n\tappend load_ramdisk=1 -install -hdd\n' > "$W/inst/syslinux.cfg"
+  # v6 butuh initrd.rgz (resmi: load_ramdisk=1 initrd=initrd.rgz -hdd-install)
+  if [ "$METHOD" = v6 ] && [ -f "$W/new_iso/isolinux/initrd.rgz" ]; then
+    cp "$W/new_iso/isolinux/initrd.rgz" "$W/inst/initrd.rgz"
+    printf 'default system\n\nLABEL system\n\tKERNEL linux\n\tAPPEND load_ramdisk=1 initrd=initrd.rgz -hdd-install\n' > "$W/inst/syslinux.cfg"
+  else
+    printf 'default system\nlabel system\n\tkernel linux\n\tappend load_ramdisk=1 -install -hdd\n' > "$W/inst/syslinux.cfg"
+  fi
   i=1; for npk in "$W/new_iso"/*.npk; do cp "$npk" "$W/inst/$i.npk"; i=$((i+1)); done
   touch "$W/inst/CHOOSE" "$W/inst/autorun.scr"; sync
   umount "$W/inst"; losetup -d "$LOOP"; trap - EXIT
   sha256sum "$IMG" > "$IMG.sha256"
   ( cd "$ART" && zip -q "install-image-$V-patched.zip" "install-image-$V-patched.img" )
+  fi
 fi
 
 # ---------------------------------------------------------------- 8. ZIP all_packages
 if want img; then
   say "rakit all_packages"
   Z="$ART/all_packages-x86-$V-patched.zip"
-  ( cd "$W/out" && zip -q -X "$Z" ./*.npk )
+  # option.npk HARUS ABSEN pada madskid/v6 (<=7.24.5): paket itu membuat
+  # verifikasi lisensi x86 gagal saat boot -> nlevel hilang, balik expires-in.
+  # Terbukti 15 Nov 2026: user downgrade 7.25.1 -> 7.24.2 dengan all_packages
+  # yang memuat option-7.24.2.npk dan lisensinya hilang.
+  if [ "$METHOD" = elseif ]; then
+    ( cd "$W/out" && zip -q -X "$Z" ./*.npk )
+  else
+    ( cd "$W/out" && zip -q -X "$Z" $(ls ./*.npk | grep -v '/option-') )
+    echo "option.npk dikecualikan dari all_packages (resep madskid/v6)"
+  fi
   sha256sum "$Z" > "$Z.sha256"
 fi
 
@@ -376,7 +504,17 @@ if want chr; then
     mkdir -p "$W/chrx/ros/var/pdb/system"
     cp "$W/out/$SYS_NAME" "$W/chrx/ros/var/pdb/system/image"
   fi
-  if [ -f "$W/out/option-$V.npk" ]; then mkdir -p "$W/chrx/ros/var/pdb/option"; cp "$W/out/option-$V.npk" "$W/chrx/ros/var/pdb/option/image"; fi
+  if [ -f "$W/out/option-$V.npk" ] && [ "$METHOD" = elseif ]; then mkdir -p "$W/chrx/ros/var/pdb/option"; cp "$W/out/option-$V.npk" "$W/chrx/ros/var/pdb/option/image"; fi
+  # auto-lisensi CHR: /rw pada partisi 2 adalah direktori nyata (bukan symlink).
+  # loader madskid menjalankan /rw/disk/rc.local saat boot -> keyman --find-key.
+  if [ "${AUTO_KEYMAN:-0}" = 1 ]; then
+    mkdir -p "$W/chrx/ros/rw/disk"
+    printf '#!/bin/sh\n/nova/bin/keyman --find-key\n' > "$W/chrx/ros/rw/disk/rc.local"
+    chmod 755 "$W/chrx/ros/rw/disk/rc.local"
+    printf ':execute {/nova/bin/keyman}\n' > "$W/chrx/ros/rw/autorun.scr"
+    chmod 644 "$W/chrx/ros/rw/autorun.scr"
+    echo "CHR: rc.local + autorun.scr dipasang (auto keyman)"
+  fi
   if [ "$METHOD" = elseif ]; then
     mkdir -p "$W/chrx/ros/bin"
     $PY "$MP/npk.py" extract "$W/out/$SYS_NAME" bin/bash "$W/chrx/ros/bin/bash" >/dev/null 2>&1 || true
